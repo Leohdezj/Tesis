@@ -103,11 +103,9 @@ def longstaff_schwartz(paths, strike, r,option_type):
             cash_flows[i] = [max(-round(x - strike,2),0) for x in paths[i]]
     
 
-    
-    
-    T = cash_flows.shape[1]-1
+    N = cash_flows.shape[1]-1
          
-    for t in range(T,0,-1):
+    for t in range(N,0,-1):
         # Look at time t+1
         # Create index to only look at in the money paths at time t
         if option_type == "calls":
@@ -151,6 +149,7 @@ def longstaff_schwartz(paths, strike, r,option_type):
     for i,row in enumerate(final_cfs):
         final_cfs[i] = max(cash_flows[i,:])
         option_price = np.mean(final_cfs)
+    
     return option_price,option_valuation
 
 
@@ -191,7 +190,18 @@ inf_portfolio=tasa_ret_anual_precio_act(portfolio)
 
 t = Ticker(portfolio, asynchronous=True)
 df = pd.DataFrame(t.option_chain)
-df=df[(df['inTheMoney'] == True) & (df['impliedVolatility'] <3)][['contractSymbol','strike','lastPrice','currency','impliedVolatility','inTheMoney']]
+df=df[(df['inTheMoney'] == True) & (df['impliedVolatility'] <3) & (df['impliedVolatility'] > 0.0001)][['contractSymbol','strike','lastPrice','currency','impliedVolatility','inTheMoney']]
+df = df.reset_index()
+
+df['inTheMoney'] = df.apply(
+    lambda row: (row['optionType'] == 'calls' and row['lastPrice'] > row['strike']) or
+                (row['optionType'] == 'puts' and row['lastPrice'] < row['strike']),
+    axis=1
+)
+
+
+df=df[df['inTheMoney']==True]
+df=df[df['optionType']=='calls']
 df = df.reset_index()
 
 
@@ -201,6 +211,9 @@ impliedVolatility=df.loc[0, 'impliedVolatility']
 r=rateRiskFree
 S0=	df.loc[0, 'lastPrice']
 mu=inf_portfolio.loc[inf_portfolio['symbol']== 'AAPL'].iloc[0]['mu']
+T = 1  # Total time period (in years)
+dt = 1/10 # Time increment (daily simulation)
+num_paths = 10  # Number of simulation paths
 paths = simulate_gbm(mu, impliedVolatility, S0, T, dt, num_paths)
 strike=	df.loc[0, 'strike']
 
@@ -210,6 +223,10 @@ optionType=df.loc[0, 'optionType']
 cash_flows = np.zeros_like(paths)
 
 
+
+rateRiskFree  = tasa_libre_riesgo()
+
+
 if optionType == "calls":
     for i in range(0,cash_flows.shape[0]):
         cash_flows[i] = [max(round(x - strike,2),0) for x in paths[i]]
@@ -217,12 +234,11 @@ else:
     for i in range(0,cash_flows.shape[0]):
         cash_flows[i] = [max(-round(x - strike,2),0) for x in paths[i]]
 
-discounted_cash_flows = np.zeros_like(cash_flows)
 
 
-T = cash_flows.shape[1]-1
+N = cash_flows.shape[1]-1
      
-for t in range(T,0,-1):
+for t in range(N,0,-1):
     # Look at time t+1
     # Create index to only look at in the money paths at time t
     if optionType == "calls":
@@ -267,15 +283,7 @@ for i,row in enumerate(final_cfs):
     final_cfs[i] = max(cash_flows[i,:])
     option_price = np.mean(final_cfs)
 
-df['inTheMoney'] = df.apply(
-    lambda row: (row['optionType'] == 'calls' and row['lastPrice'] > row['strike']) or
-                (row['optionType'] == 'puts' and row['lastPrice'] < row['strike']),
-    axis=1
-)
 
-
-df=df[df['inTheMoney']==True]
-df = df.reset_index()
 
 df['symbol'] = df['symbol'].map(convertir_a_string)
 
@@ -285,12 +293,13 @@ valores_distintos = df['optionValuation'].unique()
 
 #----------------------------------------Vector de acciones -----------------------------------------------------------------#
 
+
 portfolio = ['META', 'AMZN', 'AAPL', 'NFLX','GOOG' ]
 inf_portfolio=tasa_ret_anual_precio_act(portfolio)
 
 t = Ticker(portfolio, asynchronous=True)
 df = pd.DataFrame(t.option_chain)
-df=df[(df['inTheMoney'] == True) & (df['impliedVolatility'] <3)][['contractSymbol','strike','lastPrice','currency','impliedVolatility','inTheMoney']]
+df=df[(df['inTheMoney'] == True) & (df['impliedVolatility'] <3& (df['impliedVolatility'] > 0.0001))][['contractSymbol','strike','lastPrice','currency','impliedVolatility','inTheMoney']]
 df = df.reset_index()
 
 
@@ -313,13 +322,13 @@ valores_distintos = df['optionValuation'].unique()
 
 #----------------------------------------Prueba con una accion para graficar -----------------------------------------------------------------#
 
-dt=df[df['symbol']=='AAPL'].copy()
+df1=df[df['symbol']=='AAPL'].copy()
 
 
 import matplotlib.pyplot as plt
 
-x= range (1, len(dt)+1)
-plt.plot(x, dt['optionValuation'], marker ='o',color='b', linestyle='-')
+x= range (1, len(df1)+1)
+plt.plot(x, df1['optionValuation'], marker ='o',color='b', linestyle='-')
 
 plt.title('Grafico de linea')
 plt.xlabel('indice')
