@@ -8,7 +8,6 @@ Created on Tue Aug 20 21:45:19 2024
 
 import pandas as pd
 import numpy as np
-from yahooquery import Ticker
 import yfinance as yf
 import time
 
@@ -21,40 +20,100 @@ from sklearn.model_selection import GridSearchCV
 from sklearn.metrics import accuracy_score
 
 #----------------------             FUNCIONES              -------------------------------
-def tasa_libre_riesgo():
+def tasa_libre_riesgo(start_date, end_date):
     # Símbolo del bono del Tesoro a 10 años en Estados Unidos
     symbol = "^TNX"
+    
     # Crear un objeto Ticker con el símbolo especificado
-    tnx = Ticker(symbol)
-    # Obtener el historial de precios de cierre
-    historial_precios = tnx.history(period='1y')
-     # Último precio de cierre (rendimiento)
-    rateRiskFree  = historial_precios['adjclose'].iloc[-1]
+    tnx = yf.Ticker(symbol)
+    
+    # Obtener el historial de precios de cierre ajustados dentro del rango de fechas
+    historial_precios = tnx.history(start=start_date, end=end_date)
+    
+    # Último precio de cierre ajustado (rendimiento)
+    rateRiskFree = historial_precios['Close'].iloc[-1]
     return rateRiskFree
 
-def tasa_ret_anual_precio_act(lista):
+def tasa_ret_anual_precio_act(lista, start_date, end_date):
+    if not isinstance(lista, list):
+        lista = [lista]  # Convertirlo en una lista
     
-    df=pd.DataFrame(columns=['symbol','S0','mu'])
+    # Crear un DataFrame vacío para almacenar los resultados
+    df = pd.DataFrame(columns=['symbol', 'S0', 'mu'])
+    
     for i in lista:
-        ticker = Ticker(i)
-        price=ticker.history(period='1d')['adjclose'][0]
+        # Crear el objeto Ticker con el símbolo correspondiente
+        ticker = yf.Ticker(i)
         
-        data = ticker.history(period='1y')
+        # Obtener el precio actual (último precio ajustado)
+        price = ticker.history(period='1d')['Close'].iloc[0]
+        
+        # Obtener el historial de precios en el rango de fechas especificado
+        data = ticker.history(start=start_date, end=end_date)
         data = data.reset_index()
-        retorn = pd.DataFrame({'Date': data['date'], 'Price': data['adjclose']})
-    
+        
+        # Crear un DataFrame con las fechas y los precios ajustados
+        retorn = pd.DataFrame({'Date': data['Date'], 'Price': data['Close']})
+        
         # Calcular los retornos logarítmicos
         retorn['Log_Returns'] = np.log(retorn['Price'] / retorn['Price'].shift(1))
-    
-        # Calcular la deriva (drift)
-        drift = retorn['Log_Returns'].mean() / retorn.shape[0]
         
-        temp=[i, price, drift ]
+        # Calcular la deriva anualizada (drift)
+        drift = retorn['Log_Returns'].mean() * 252  # Aproximadamente 252 días de mercado por año
+        
+        # Agregar los resultados al DataFrame
+        temp = [i, price, drift]
         df.loc[len(df)] = temp
 
     return df
-     
 
+
+     
+def obtener_opciones(portfolio, start_date, end_date):
+    if not isinstance(portfolio, list):
+        portfolio = [portfolio]  # Convertirlo en una lista
+    
+    # Crear una lista para almacenar los DataFrames de las opciones
+    df_list = []
+    
+    for symbol in portfolio:
+        ticker = yf.Ticker(symbol)
+        options = ticker.option_chain()  # Obtiene las opciones (calls y puts)
+        df_calls = options.calls
+        df_calls['optionType'] = 'calls'
+        
+        df_puts = options.puts
+        df_puts['optionType'] = 'puts'
+        
+        # Unificamos los 'calls' y 'puts' en un único DataFrame
+        df = pd.concat([df_calls, df_puts], ignore_index=True)
+        
+        # Filtrar por las fechas de negociación
+        df['lastTradeDate'] = pd.to_datetime(df['lastTradeDate'])
+        df = df[(df['lastTradeDate'] >= start_date) & (df['lastTradeDate'] <= end_date)]
+        
+        # Filtramos las opciones 'inTheMoney'
+        df['inTheMoney'] = df.apply(
+            lambda row: (row['optionType'] == 'calls' and row['lastPrice'] > row['strike']) or
+                        (row['optionType'] == 'puts' and row['lastPrice'] < row['strike']),
+            axis=1
+        )
+        
+        df=df[(df['inTheMoney'] == True) & (df['impliedVolatility'] <3)]
+        
+        # Añadir la columna del símbolo
+        df['symbol'] = symbol
+        
+        # Crear una columna con la fecha corta
+        df['shortDate'] = df['lastTradeDate'].dt.strftime('%Y-%m-%d')
+        
+        # Añadir el DataFrame a la lista
+        df_list.append(df)
+    
+    # Concatenamos todos los DataFrames obtenidos
+    final_df = pd.concat(df_list, ignore_index=True)
+    final_df = final_df.reset_index(drop=True)
+    return final_df
  
 
 
@@ -90,7 +149,6 @@ def simulate_gbm(mu, sigma, s0, T, dt, num_paths):
     return paths
 
 
-
 def longstaff_schwartz(paths, strike, r,option_type):
     cash_flows = np.zeros_like(paths)
     
@@ -103,21 +161,24 @@ def longstaff_schwartz(paths, strike, r,option_type):
             cash_flows[i] = [max(-round(x - strike,2),0) for x in paths[i]]
     
 
-    N = cash_flows.shape[1]-1
-         
-    for t in range(N,0,-1):
+    
+    
+    T = cash_flows.shape[1]-1
+
+    for t in range(T,0,-1):
+        
         # Look at time t+1
         # Create index to only look at in the money paths at time t
         if option_type == "calls":
-            in_the_money =paths[:,t] > strike
+            in_the_money =paths[:,t-1] > strike
         else:
-            in_the_money =paths[:,t] < strike
+            in_the_money =paths[:,t-1] < strike
             
-        if len(paths[in_the_money,t])>0:
+        if len(paths[in_the_money,t-1])>0:
             # Run Regression
-            X = (paths[in_the_money,t])
+            X = (paths[in_the_money,t-1])
             X=X.reshape(-1,1)
-            Y = cash_flows[in_the_money,t-1]  * np.exp(-r)
+            Y = cash_flows[in_the_money,t]  * np.exp(-r)
             model_sklearn = SVR(kernel="rbf", C=1e1, gamma=0.1)
             model = model_sklearn.fit(X, Y)
             conditional_exp = model.predict(X)
@@ -149,8 +210,8 @@ def longstaff_schwartz(paths, strike, r,option_type):
     for i,row in enumerate(final_cfs):
         final_cfs[i] = max(cash_flows[i,:])
         option_price = np.mean(final_cfs)
-    
     return option_price,option_valuation
+
 
 
 
@@ -177,35 +238,27 @@ def convertir_a_string(valor):
 T = 1  # Total time period (in years)
 dt = 1/10 # Time increment (daily simulation)
 num_paths = 10  # Number of simulation paths
-
-rateRiskFree  = tasa_libre_riesgo()
+start_date, end_date="2023-01-01", "2025-12-01"
+rateRiskFree  = tasa_libre_riesgo(start_date, end_date)
 
 
 
 
 #----------------------------------------Prueba con una sola accion -----------------------------------------------------------------#
 
-portfolio = [ 'AAPL' ]
-inf_portfolio=tasa_ret_anual_precio_act(portfolio)
+portfolio ="AAPL"
+inf_portfolio=tasa_ret_anual_precio_act(portfolio,start_date, end_date)
+# Símbolo de un activo (por ejemplo, AAPL)
+df= obtener_opciones(portfolio,start_date, end_date)
 
-t = Ticker(portfolio, asynchronous=True)
-df = pd.DataFrame(t.option_chain)
-df=df[(df['inTheMoney'] == True) & (df['impliedVolatility'] <3) & (df['impliedVolatility'] > 0.0001)][['contractSymbol','strike','lastPrice','currency','impliedVolatility','inTheMoney']]
+
+df=df[df['optionType']=='puts']
 df = df.reset_index()
 
-df['inTheMoney'] = df.apply(
-    lambda row: (row['optionType'] == 'calls' and row['lastPrice'] > row['strike']) or
-                (row['optionType'] == 'puts' and row['lastPrice'] < row['strike']),
-    axis=1
-)
+df=df[(df['inTheMoney'] == True) & (df['impliedVolatility'] <3)]
 
-
-df=df[df['inTheMoney']==True]
-df=df[df['optionType']=='calls']
+df=df.tail(1)
 df = df.reset_index()
-
-
-df=df.head(1)
 
 impliedVolatility=df.loc[0, 'impliedVolatility']
 r=rateRiskFree
@@ -224,7 +277,8 @@ cash_flows = np.zeros_like(paths)
 
 
 
-rateRiskFree  = tasa_libre_riesgo()
+rateRiskFree  = tasa_libre_riesgo(start_date, end_date)
+
 
 
 if optionType == "calls":
@@ -234,11 +288,12 @@ else:
     for i in range(0,cash_flows.shape[0]):
         cash_flows[i] = [max(-round(x - strike,2),0) for x in paths[i]]
 
+discounted_cash_flows = np.zeros_like(cash_flows)
 
 
-N = cash_flows.shape[1]-1
+T = cash_flows.shape[1]-1
      
-for t in range(N,0,-1):
+for t in range(T,0,-1):
     # Look at time t+1
     # Create index to only look at in the money paths at time t
     if optionType == "calls":
@@ -295,25 +350,11 @@ valores_distintos = df['optionValuation'].unique()
 
 
 portfolio = ['META', 'AMZN', 'AAPL', 'NFLX','GOOG' ]
-inf_portfolio=tasa_ret_anual_precio_act(portfolio)
-
-t = Ticker(portfolio, asynchronous=True)
-df = pd.DataFrame(t.option_chain)
-df=df[(df['inTheMoney'] == True) & (df['impliedVolatility'] <3& (df['impliedVolatility'] > 0.0001))][['contractSymbol','strike','lastPrice','currency','impliedVolatility','inTheMoney']]
-df = df.reset_index()
 
 
-df['inTheMoney'] = df.apply(
-    lambda row: (row['optionType'] == 'calls' and row['lastPrice'] > row['strike']) or
-                (row['optionType'] == 'puts' and row['lastPrice'] < row['strike']),
-    axis=1
-)
+inf_portfolio=tasa_ret_anual_precio_act(portfolio,start_date, end_date)
 
-
-df=df[df['inTheMoney']==True]
-df = df.reset_index()
-
-df['symbol'] = df['symbol'].map(convertir_a_string)
+df= obtener_opciones(portfolio,start_date, end_date)
 
 df['cashFlows'] = list(map(condicional, df['symbol'], df['optionType'], df['strike']))
 df[['optionPrice','optionValuation']]=pd.DataFrame(list(map(price_value_op, df['symbol'], df['optionType'], df['strike'], df['impliedVolatility'], df['lastPrice'])))
