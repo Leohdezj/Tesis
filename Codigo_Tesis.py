@@ -136,6 +136,7 @@ def is_itm(row):
 def simulate_gbm(mu, sigma, s0, T, dt, num_paths):
     np.random.seed(99)
     num_steps = int(T / dt) + 1
+ 
     times = np.linspace(0, T, num_steps)
     paths = np.zeros(( num_paths,num_steps))
 
@@ -193,14 +194,14 @@ def longstaff_schwartz(paths, strike, r,option_type):
         exercised_early = continuations < cash_flows[:,t]
         cash_flows[:,0:t][exercised_early,:] = 0
     
-    
-    
+
     decision=pd.DataFrame(cash_flows)  
     option_valuation = decision.idxmax(axis=1)
     option_valuation = option_valuation.tolist()
     option_valuation= pd.DataFrame( option_valuation )
     
-    
+    vector_valuation = option_valuation.T 
+
     option_valuation = option_valuation[option_valuation[0] != 0]
     # Calcular la moda de los valores diferentes de 0
     
@@ -210,7 +211,7 @@ def longstaff_schwartz(paths, strike, r,option_type):
     for i,row in enumerate(final_cfs):
         final_cfs[i] = max(cash_flows[i,:])
         option_price = np.mean(final_cfs)
-    return option_price,option_valuation
+    return option_price,option_valuation,vector_valuation
 
 
 
@@ -221,9 +222,21 @@ def price_value_op(symbol,optionType,strike,impliedVolatility,lastPrice):
     mu=inf_portfolio.loc[inf_portfolio['symbol']==symbol].iloc[0]['mu']
     
     paths = simulate_gbm(mu, impliedVolatility, lastPrice, T, dt, num_paths)
-    option_price,option_valuation=longstaff_schwartz(paths = paths, strike =strike, r = rateRiskFree, option_type=optionType)
+    option_price,option_valuation,vector_valuation=longstaff_schwartz(paths = paths, strike =strike, r = rateRiskFree, option_type=optionType)
     
-    return option_price,option_valuation
+    return option_price,option_valuation,vector_valuation
+
+def obtain_option_values(row):
+    # Llamar a la función 'price_value_op' para obtener los tres valores
+    option_price, option_valuation, vector_valuation = price_value_op(
+        row['symbol'], row['optionType'], row['strike'], row['impliedVolatility'], row['lastPrice']
+    )
+    
+    # Devolver los tres valores como un pandas.Series
+    # Esto retornará 'optionPrice', 'optionValuation', y las columnas del 'vector_valuation'
+    result = pd.Series([option_price, option_valuation] + vector_valuation.iloc[0].tolist())
+    
+    return result
 
 
 
@@ -236,8 +249,8 @@ def convertir_a_string(valor):
 
 
 T = 1  # Total time period (in years)
-dt = 1/10 # Time increment (daily simulation)
-num_paths = 10  # Number of simulation paths
+dt = 1/1000 # Time increment (daily simulation)
+num_paths = 100  # Number of simulation paths
 start_date, end_date="2023-01-01", "2025-12-01"
 rateRiskFree  = tasa_libre_riesgo(start_date, end_date)
 
@@ -264,9 +277,7 @@ impliedVolatility=df.loc[0, 'impliedVolatility']
 r=rateRiskFree
 S0=	df.loc[0, 'lastPrice']
 mu=inf_portfolio.loc[inf_portfolio['symbol']== 'AAPL'].iloc[0]['mu']
-T = 1  # Total time period (in years)
-dt = 1/10 # Time increment (daily simulation)
-num_paths = 10  # Number of simulation paths
+
 paths = simulate_gbm(mu, impliedVolatility, S0, T, dt, num_paths)
 strike=	df.loc[0, 'strike']
 
@@ -291,21 +302,22 @@ else:
 discounted_cash_flows = np.zeros_like(cash_flows)
 
 
-T = cash_flows.shape[1]-1
+T_num = cash_flows.shape[1]-1
      
-for t in range(T,0,-1):
-    # Look at time t+1
-    # Create index to only look at in the money paths at time t
+for t in range(T_num,0,-1):
+
+    # Look at time t
+    # Create index to only look at in the money paths at time t-1
     if optionType == "calls":
-        in_the_money =paths[:,t] > strike
+        in_the_money =paths[:,t-1] > strike
     else:
-        in_the_money =paths[:,t] < strike
+        in_the_money =paths[:,t-1] < strike
         
-    if len(paths[in_the_money,t])>0:
+    if len(paths[in_the_money,t-1])>0:
         # Run Regression
-        X = (paths[in_the_money,t])
+        X = (paths[in_the_money,t-1])
         X=X.reshape(-1,1)
-        Y = cash_flows[in_the_money,t-1]  * np.exp(-r)
+        Y = cash_flows[in_the_money,t]  * np.exp(-r)
         model_sklearn = SVR(kernel="rbf", C=1e1, gamma=0.1)
         model = model_sklearn.fit(X, Y)
         conditional_exp = model.predict(X)
@@ -327,6 +339,7 @@ option_valuation = decision.idxmax(axis=1)
 option_valuation = option_valuation.tolist()
 option_valuation= pd.DataFrame( option_valuation )
 
+vector_valuation = option_valuation.T
 
 option_valuation = option_valuation[option_valuation[0] != 0]
 # Calcular la moda de los valores diferentes de 0
@@ -343,7 +356,14 @@ for i,row in enumerate(final_cfs):
 df['symbol'] = df['symbol'].map(convertir_a_string)
 
 df['cashFlows'] = list(map(condicional, df['symbol'], df['optionType'], df['strike']))
-df[['optionPrice','optionValuation']]=pd.DataFrame(list(map(price_value_op, df['symbol'], df['optionType'], df['strike'], df['impliedVolatility'], df['lastPrice'])))
+# Crear un DataFrame temporal con todos los valores
+new_cols = df.apply(obtain_option_values, axis=1, result_type="expand")
+
+# Crear las nuevas columnas con los nombres correspondientes
+new_cols.columns = ['optionPrice', 'optionValuation'] + [f'vector_valuation_{i}' for i in range(num_paths)]
+
+# Concatenar las nuevas columnas con el DataFrame original
+df = pd.concat([df, new_cols], axis=1)
 valores_distintos = df['optionValuation'].unique()
 
 #----------------------------------------Vector de acciones -----------------------------------------------------------------#
@@ -357,13 +377,20 @@ inf_portfolio=tasa_ret_anual_precio_act(portfolio,start_date, end_date)
 df= obtener_opciones(portfolio,start_date, end_date)
 
 df['cashFlows'] = list(map(condicional, df['symbol'], df['optionType'], df['strike']))
-df[['optionPrice','optionValuation']]=pd.DataFrame(list(map(price_value_op, df['symbol'], df['optionType'], df['strike'], df['impliedVolatility'], df['lastPrice'])))
+# Crear un DataFrame temporal con todos los valores
+new_cols = df.apply(obtain_option_values, axis=1, result_type="expand")
+
+# Crear las nuevas columnas con los nombres correspondientes
+new_cols.columns = ['optionPrice', 'optionValuation'] + [f'vector_valuation_{i}' for i in range(num_paths)]
+
+# Concatenar las nuevas columnas con el DataFrame original
+df = pd.concat([df, new_cols], axis=1)
 valores_distintos = df['optionValuation'].unique()
 
 
 #----------------------------------------Prueba con una accion para graficar -----------------------------------------------------------------#
 
-df1=df[df['symbol']=='AAPL'].copy()
+df1=df[df['symbol']=='AMZN'].copy()
 
 
 import matplotlib.pyplot as plt
