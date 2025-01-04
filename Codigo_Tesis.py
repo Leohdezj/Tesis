@@ -31,10 +31,11 @@ def tasa_libre_riesgo(start_date, end_date):
     historial_precios = tnx.history(start=start_date, end=end_date)
     
     # Último precio de cierre ajustado (rendimiento)
-    rateRiskFree = historial_precios['Close'].iloc[-1]
+    rateRiskFree = historial_precios['Close'].iloc[-1]/100
     return rateRiskFree
 
 def tasa_ret_anual_precio_act(lista, start_date, end_date):
+   
     if not isinstance(lista, list):
         lista = [lista]  # Convertirlo en una lista
     
@@ -165,7 +166,7 @@ def longstaff_schwartz(paths, strike, r,option_type):
     
     
     T = cash_flows.shape[1]-1
-
+    r_t=r/ T 
     for t in range(T,0,-1):
         
         # Look at time t+1
@@ -179,7 +180,7 @@ def longstaff_schwartz(paths, strike, r,option_type):
             # Run Regression
             X = (paths[in_the_money,t-1])
             X=X.reshape(-1,1)
-            Y = cash_flows[in_the_money,t]  * np.exp(-r)
+            Y = cash_flows[in_the_money,t]  * np.exp(-r_t)
             model_sklearn = SVR(kernel="rbf", C=1e1, gamma=0.1)
             model = model_sklearn.fit(X, Y)
             conditional_exp = model.predict(X)
@@ -200,7 +201,7 @@ def longstaff_schwartz(paths, strike, r,option_type):
     option_valuation = option_valuation.tolist()
     option_valuation= pd.DataFrame( option_valuation )
     
-    vector_valuation = option_valuation.T 
+    vector_valuation = option_valuation
 
     option_valuation = option_valuation[option_valuation[0] != 0]
     # Calcular la moda de los valores diferentes de 0
@@ -210,9 +211,20 @@ def longstaff_schwartz(paths, strike, r,option_type):
     final_cfs = np.zeros((cash_flows.shape[0], 1), dtype=float)
     for i,row in enumerate(final_cfs):
         final_cfs[i] = max(cash_flows[i,:])
-        option_price = np.mean(final_cfs)
-    return option_price,option_valuation,vector_valuation
+    
+        
+    final_cfs= pd.DataFrame( final_cfs )
 
+    final_cfs = pd.concat([final_cfs, vector_valuation], axis=1)
+    final_cfs.columns = ['price', 'exercise']
+
+    final_cfs['present_value'] = final_cfs['price'] / np.exp(r_t * final_cfs['exercise'])
+
+    option_price = np.mean(final_cfs['present_value'])
+    
+    vector_valuation=vector_valuation.T
+    
+    return option_price,option_valuation,vector_valuation
 
 
 
@@ -303,7 +315,7 @@ discounted_cash_flows = np.zeros_like(cash_flows)
 
 
 T_num = cash_flows.shape[1]-1
-     
+r_t=r/ T_num 
 for t in range(T_num,0,-1):
 
     # Look at time t
@@ -317,7 +329,7 @@ for t in range(T_num,0,-1):
         # Run Regression
         X = (paths[in_the_money,t-1])
         X=X.reshape(-1,1)
-        Y = cash_flows[in_the_money,t]  * np.exp(-r)
+        Y = cash_flows[in_the_money,t]  * np.exp(-r_t)
         model_sklearn = SVR(kernel="rbf", C=1e1, gamma=0.1)
         model = model_sklearn.fit(X, Y)
         conditional_exp = model.predict(X)
@@ -339,7 +351,7 @@ option_valuation = decision.idxmax(axis=1)
 option_valuation = option_valuation.tolist()
 option_valuation= pd.DataFrame( option_valuation )
 
-vector_valuation = option_valuation.T
+vector_valuation = option_valuation
 
 option_valuation = option_valuation[option_valuation[0] != 0]
 # Calcular la moda de los valores diferentes de 0
@@ -349,7 +361,15 @@ option_valuation = option_valuation.mode()[0][0] if  not option_valuation.empty 
 final_cfs = np.zeros((cash_flows.shape[0], 1), dtype=float)
 for i,row in enumerate(final_cfs):
     final_cfs[i] = max(cash_flows[i,:])
-    option_price = np.mean(final_cfs)
+
+final_cfs= pd.DataFrame( final_cfs )
+
+final_cfs = pd.concat([final_cfs, vector_valuation], axis=1)
+final_cfs.columns = ['price', 'exercise']
+
+final_cfs['present_value'] = final_cfs['price'] / np.exp(r_t * final_cfs['exercise'])
+
+option_price = np.mean(final_cfs['present_value'])
 
 
 
@@ -388,7 +408,7 @@ df = pd.concat([df, new_cols], axis=1)
 valores_distintos = df['optionValuation'].unique()
 
 
-#----------------------------------------Prueba con una accion para graficar -----------------------------------------------------------------#
+#----------------------------------------Prueba con una acción para graficar -----------------------------------------------------------------#
 
 df1=df[df['symbol']=='AMZN'].copy()
 
