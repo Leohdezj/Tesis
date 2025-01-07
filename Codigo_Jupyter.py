@@ -12,6 +12,7 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 import time
+import matplotlib.pyplot as plt
 # ==============================================================================
 # Preprocesado y modelado
 # ==============================================================================
@@ -727,7 +728,7 @@ def convertir_a_string(valor):
 
 # Definición de los parámetros de simulación
 T = 1  # Total time period (1 year)
-dt = 1/1000  # Time increment (daily simulation, approx 1/1000 of a year)
+dt = 1/100  # Time increment (daily simulation, approx 1/1000 of a year)
 num_paths = 100  # Number of simulation paths
 
 # Fechas para calcular tasa libre de riesgo
@@ -749,6 +750,7 @@ df = obtener_opciones(portfolio, start_date, end_date)
 # Filtrar opciones PUT 'in-the-money' y con volatilidad implícita < 3
 df = df[(df['optionType'] == 'puts') & (df['inTheMoney'] == True) & (df['impliedVolatility'] < 3)]
 
+
 # Tomar la última opción
 df = df.tail(1).reset_index()
 
@@ -765,10 +767,17 @@ precio = binomial_tree_american_option(S0=S0, K=strike, T=T, r=r, sigma=impliedV
 # Simulación de trayectorias con GBM
 paths = simulate_gbm(mu, impliedVolatility, S0, T, dt, num_paths)
 
+
+# Inicialización de las listas para los tiempos y los precios de ejercicio y no ejercicio
+exercise_times = []
+exercise_prices = []
+continuation_times = []
+continuation_prices = []
+
 # Cálculo de flujos de caja
 cash_flows = np.zeros_like(paths)
 for i in range(cash_flows.shape[0]):
-    cash_flows[i] = [max(round(x - strike, 2), 0) if optionType == 'calls' else max(-round(x - strike, 2), 0) for x in paths[i]]
+    cash_flows[i] = [max(x - strike, 0) if optionType == 'calls' else max(-(x - strike), 0) for x in paths[i]]
 
 # Descuento de los flujos de caja
 T_num = cash_flows.shape[1] - 1
@@ -789,6 +798,18 @@ for t in range(T_num, 0, -1):
     cash_flows[:, t] = np.where(continuations > cash_flows[:, t], 0, cash_flows[:, t])
     exercised_early = continuations < cash_flows[:, t]
     cash_flows[:, 0:t][exercised_early, :] = 0
+    
+ 
+    # Almacenamos las decisiones de ejercicio y no ejercicio para graficarlas
+    for i in range(len(paths)):
+        if exercised_early[i]:
+            # Almacenar los tiempos y precios de ejercicio
+            exercise_times.append(t)
+            exercise_prices.append(paths[i, t])
+        else:
+            # Almacenar los tiempos y precios de continuación
+            continuation_times.append(t)
+            continuation_prices.append(paths[i, t])
 
 # Calcular el precio de la opción y otros valores
 final_cfs = np.max(cash_flows, axis=1)
@@ -812,6 +833,80 @@ valores_distintos = df['optionValuation'].unique()
 print(df.head())
 print(f"Valores únicos de optionValuation: {valores_distintos}")
 
+
+
+
+
+
+# Crear el gráfico
+t = np.linspace(0, 1, int(1/dt)+1)  # Tiempo normalizado de 0 a 1 para cada paso de tiempo
+
+
+plt.figure(figsize=(10, 6))
+for i in range(num_paths):  # Mostrar las trayectorias
+    plt.plot(t, paths[i, :], label=f'Trayectoria {i+1}')
+
+plt.title("Trayectorias de la Acción a lo largo del tiempo")
+plt.xlabel("Tiempo en t")
+plt.ylabel("Precio de la acción")
+plt.grid(True)
+plt.show()
+
+
+plt.figure(figsize=(10, 6))
+
+
+
+
+# Graficar ejercicio vs continuación
+
+
+# Convertir las listas a arrays de numpy para operaciones matemáticas
+exercise_times = np.array(exercise_times)
+continuation_times = np.array(continuation_times)
+
+# Normalizamos los tiempos a [0, 1] (suponiendo que el rango original es [0, 100])
+# Normalización utilizando el tamaño total (int(1/dt)+1)
+total_steps = int(1 / dt)   # Número total de pasos de tiempo normalizados
+
+exercise_times_normalized = exercise_times / total_steps
+continuation_times_normalized = continuation_times / total_steps
+
+# Graficar ejercicio vs continuación con tiempo normalizado [0, 1]
+plt.figure(figsize=(10, 6))
+plt.plot(exercise_times_normalized, exercise_prices, "rx", label="Ejercicio")
+plt.plot(continuation_times_normalized, continuation_prices, ".", color="grey", label="Continuación")
+plt.legend()
+plt.xlabel("Tiempo t")
+plt.ylabel("Precio de la acción")
+plt.title(f"Ejercicio vs Continuación - Opción {optionType.capitalize()}")
+plt.grid(True)
+plt.show()
+
+
+# Determinar el primer ejercicio para cada trayectoría
+first_exercise_idx = np.argmax(cash_flows != 0, axis=1)  # Encuentra el primer ejercicio no nulo para cada trayecto
+
+plt.figure(figsize=(10, 6))
+
+# Graficar las trayectorias
+for i in range(num_paths):
+    plt.plot(t[:first_exercise_idx[i] + 1], paths[i, :first_exercise_idx[i] + 1], color="lightgray", linestyle="-")
+    plt.plot(t[first_exercise_idx[i]:], paths[i, first_exercise_idx[i]:], color="darkgray", linestyle="--")
+    if first_exercise_idx[i] < len(t):
+        plt.plot(t[first_exercise_idx[i]], paths[i, first_exercise_idx[i]], 'rx')
+
+# Etiquetas y leyenda
+plt.xlabel("Tiempo t")
+plt.ylabel("Precio de la acción")
+plt.title(f"Trayectorias con primer ejercicio de la opción")
+plt.legend(["Camino antes del ejercicio", "Camino después del ejercicio", "Primer ejercicio"], loc="best")
+
+# Mostrar el gráfico
+plt.show()
+####################################################################################################################
+
+####################################################################################################################
 
 portfolio = ['META', 'AMZN', 'AAPL', 'NFLX', 'GOOG']  #Ejemplo de un portafolio
 
