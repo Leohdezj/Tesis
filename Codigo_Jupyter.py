@@ -13,6 +13,7 @@ import numpy as np
 import yfinance as yf
 import time
 import matplotlib.pyplot as plt
+import seaborn as sns
 # ==============================================================================
 # Preprocesado y modelado
 # ==============================================================================
@@ -269,8 +270,7 @@ def simulate_gbm(mu, sigma, s0, T, dt, num_paths):
 
     return paths
 
-
-def longstaff_schwartz(paths, strike, r,option_type):
+def longstaff_schwartz(paths, strike, r,option_type,graphics=False):
     """
     Valora una opción americana utilizando el método de Longstaff-Schwartz basado en regresión.
 
@@ -306,7 +306,13 @@ def longstaff_schwartz(paths, strike, r,option_type):
     4. Calcula el precio presente de la opción descontando los flujos de caja.
     5. Calcula el intervalo de confianza del 95% utilizando el error estándar y la desviación estándar.
     """
-   
+    
+    # Inicialización de las listas para los tiempos y los precios de ejercicio y no ejercicio
+    exercise_times = []
+    exercise_prices = []
+    continuation_times = []
+    continuation_prices = []
+
     # Inicialización de los flujos de caja
     cash_flows = np.zeros_like(paths)
 
@@ -344,6 +350,7 @@ def longstaff_schwartz(paths, strike, r,option_type):
             continuations[in_the_money] = conditional_exp
         else:
             continuations = np.zeros_like(paths[:, t])
+        
 
         # Regla de decisión: si la continuación es mayor que el flujo de caja, no ejercer
         cash_flows[:, t] = np.where(continuations > cash_flows[:, t], 0, cash_flows[:, t])
@@ -351,6 +358,19 @@ def longstaff_schwartz(paths, strike, r,option_type):
         # Segunda regla: si se ejerce la opción antes, los flujos de caja futuros son 0
         exercised_early = continuations < cash_flows[:, t]
         cash_flows[:, 0:t][exercised_early, :] = 0
+
+        
+        if graphics: 
+            # Almacenamos las decisiones de ejercicio y no ejercicio para graficarlas
+            for i in range(len(paths)):
+                if exercised_early[i]:
+                    # Almacenar los tiempos y precios de ejercicio
+                    exercise_times.append(t)
+                    exercise_prices.append(paths[i, t])
+                else:
+                    # Almacenar los tiempos y precios de continuación
+                    continuation_times.append(t)
+                    continuation_prices.append(paths[i, t])
 
     # Convertir los flujos de caja en un DataFrame para mejor visualización
     decision = pd.DataFrame(cash_flows)
@@ -406,6 +426,75 @@ def longstaff_schwartz(paths, strike, r,option_type):
     margin_error = z * standard_error
     lower_interval = average - margin_error
     upper_interval = average + margin_error
+
+    if graphics:
+        
+        t = np.linspace(0, 1,  cash_flows.shape[1])  # Tiempo normalizado de 0 a 1 para cada paso de tiempo
+        # Crear el gráfico
+        plt.figure(figsize=(10, 6))
+        for i in range(num_paths):  # Mostrar las trayectorias
+            plt.plot(t, paths[i, :], label=f'Trayectoria {i+1}')
+        
+        plt.title("Trayectorias de la Acción a lo largo del tiempo")
+        plt.xlabel("Tiempo en t")
+        plt.ylabel("Precio de la acción")
+        plt.grid(True)
+        plt.show()
+        plt.figure(figsize=(10, 6))
+        
+        
+        
+        # Crear el gráfico de cajas
+        sns.boxplot(data=final_cfs['present_value'])
+        
+        # Personalizar el gráfico
+        plt.title("Gráfico de Cajas del precio de la acción")
+        plt.xlabel("Distribución de los datos")
+        plt.ylabel("Valor")
+        
+        # Mostrar el gráfico
+        plt.show()
+
+        
+        
+        # Graficar ejercicio vs continuación
+        # Convertir las listas a arrays de numpy para operaciones matemáticas
+        exercise_times = np.array(exercise_times)
+        continuation_times = np.array(continuation_times)
+        # Normalizamos los tiempos a [0, 1] (suponiendo que el rango original es [0, 100])
+        # Normalización utilizando el tamaño total (int(1/dt)+1)
+        total_steps =  cash_flows.shape[1]-1  # Número total de pasos de tiempo normalizados
+        exercise_times_normalized = exercise_times / total_steps
+        continuation_times_normalized = continuation_times / total_steps
+        # Graficar ejercicio vs continuación con tiempo normalizado [0, 1]
+        plt.figure(figsize=(10, 6))
+        plt.plot(exercise_times_normalized, exercise_prices, "rx", label="Ejercicio")
+        plt.plot(continuation_times_normalized, continuation_prices, ".", color="grey", label="Continuación")
+        plt.legend()
+        plt.xlabel("Tiempo t")
+        plt.ylabel("Precio de la acción")
+        plt.title(f"Ejercicio vs Continuación - Opción {option_type.capitalize()}")
+        plt.grid(True)
+        plt.show()
+        
+        
+        # Determinar el primer ejercicio para cada trayectoría
+        first_exercise_idx = np.argmax(cash_flows != 0, axis=1)  # Encuentra el primer ejercicio no nulo para cada trayecto
+        plt.figure(figsize=(10, 6))
+        # Graficar las trayectorias
+        for i in range(num_paths):
+            plt.plot(t[:first_exercise_idx[i] + 1], paths[i, :first_exercise_idx[i] + 1], color="lightgray", linestyle="-")
+            plt.plot(t[first_exercise_idx[i]:], paths[i, first_exercise_idx[i]:], color="darkgray", linestyle="--")
+            if first_exercise_idx[i] < len(t):
+                plt.plot(t[first_exercise_idx[i]], paths[i, first_exercise_idx[i]], 'rx')
+        
+        # Etiquetas y leyenda
+        plt.xlabel("Tiempo t")
+        plt.ylabel("Precio de la acción")
+        plt.title(f"Trayectorias con primer ejercicio de la opción")
+        plt.legend(["Camino antes del ejercicio", "Camino después del ejercicio", "Primer ejercicio"], loc="best")
+        # Mostrar el gráfico
+        plt.show()
 
     return option_price, lower_interval, upper_interval, option_valuation, vector_valuation
 
@@ -628,7 +717,7 @@ def longstaff_schwartz_polinomios(paths, strike, r, option_type, poly_degree=2):
 
     return option_price
 
-def price_value_op( symbol, optionType, strike, impliedVolatility, lastPrice, T, dt, num_paths, rateRiskFree):
+def price_value_op( symbol, optionType, strike, impliedVolatility, lastPrice, T, dt, num_paths, rateRiskFree,graphics):
     """
     Calcula el valor de una opción utilizando diversos métodos: Longstaff-Schwartz, Black-Scholes, Monte Carlo y Árbol Binomial.
 
@@ -653,7 +742,7 @@ def price_value_op( symbol, optionType, strike, impliedVolatility, lastPrice, T,
     
     # Método Longstaff-Schwartz
     option_price, lower_interval, upper_interval, option_valuation, vector_valuation = longstaff_schwartz(
-        paths=paths, strike=strike, r=rateRiskFree, option_type=optionType
+        paths=paths, strike=strike, r=rateRiskFree, option_type=optionType,graphics=graphics
     )
     
     # Método Black-Scholes
@@ -682,7 +771,7 @@ def price_value_op( symbol, optionType, strike, impliedVolatility, lastPrice, T,
 
 
     
-def obtain_option_values(row, T, dt, num_paths, rateRiskFree):
+def obtain_option_values(row, T, dt, num_paths, rateRiskFree,graphics):
     """
     Obtiene los valores de la opción (precio, intervalo de confianza, valoración de la opción) usando
     diversos métodos y devuelve los resultados como un pandas.Series.
@@ -699,7 +788,7 @@ def obtain_option_values(row, T, dt, num_paths, rateRiskFree):
     
     # Llamar a la función 'price_value_op' para obtener los precios y valoraciones
     option_price, lower_interval, upper_interval, option_valuation,black_scholes_price, monte_carlo_price, binomial_price,LSP2,LSP3,vector_valuation= price_value_op(
-        row['symbol'], row['optionType'], row['strike'], row['impliedVolatility'], row['lastPrice'], T, dt, num_paths, rateRiskFree
+        row['symbol'], row['optionType'], row['strike'], row['impliedVolatility'], row['lastPrice'], T, dt, num_paths, rateRiskFree, graphics
     )
     
     # Asegúrate de que vector_valuation se haya devuelto como una Serie o lista y no un DataFrame
@@ -822,7 +911,7 @@ df['symbol'] = df['symbol'].map(convertir_a_string)
 df['cashFlows'] = df.apply(lambda row: condicional(row['symbol'], row['optionType'], row['strike']), axis=1)
 
 
-new_cols = df.apply(obtain_option_values, axis=1, T=T, dt=dt, num_paths=num_paths, rateRiskFree=rateRiskFree, result_type="expand")
+new_cols = df.apply(obtain_option_values, axis=1, T=T, dt=dt, num_paths=num_paths, rateRiskFree=rateRiskFree, graphics= True, result_type="expand")
 
 new_cols.columns = ['optionPrice', 'lowerInterval', 'upperInterval', 'optionValuation', 'black_scholes_price', 'monte_carlo_price', 'binomial_price','lsp2_price','lsp3_price'] + [f'vector_valuation_{i}' for i in range(num_paths)]
 df = pd.concat([df, new_cols], axis=1)
@@ -903,7 +992,8 @@ plt.title(f"Trayectorias con primer ejercicio de la opción")
 plt.legend(["Camino antes del ejercicio", "Camino después del ejercicio", "Primer ejercicio"], loc="best")
 
 # Mostrar el gráfico
-plt.show()
+plt.show() 
+cash_flows.shape[0]
 ####################################################################################################################
 
 ####################################################################################################################
@@ -920,7 +1010,7 @@ df = obtener_opciones(portfolio, start_date, end_date)
 df['cashFlows'] = df.apply(lambda row: condicional(row['symbol'], row['optionType'], row['strike']), axis=1)
 
 # Crear un DataFrame temporal con todos los valores de la opción
-new_cols = df.apply(obtain_option_values, axis=1, T=T, dt=dt, num_paths=num_paths, rateRiskFree=rateRiskFree, result_type="expand")
+new_cols = df.apply(obtain_option_values, axis=1, T=T, dt=dt, num_paths=num_paths, rateRiskFree=rateRiskFree, graphics=False, result_type="expand")
 
 # Nombres de las nuevas columnas
 new_cols.columns = ['optionPrice', 'lowerInterval', 'upperInterval', 'optionValuation', 'black_scholes_price', 'monte_carlo_price', 'binomial_price','lsp2_price','lsp3_price'] + [f'vector_valuation_{i}' for i in range(num_paths)]
